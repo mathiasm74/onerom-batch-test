@@ -424,14 +424,18 @@ mkdir -p "$(dirname "$LOG")"
 # upstream/01-scan-misses-running-board.md.
 zmodload zsh/datetime
 wait_unplug() {
-  local first_miss="" why
+  local first_miss="" out why
   while true; do
-    if scan | grep -q "$1"; then
+    # One scan, both streams: the presence test and the reason for a miss
+    # must come from the same scan or a flapping board defeats the reason.
+    # "Serial: X" is the device line; the WARN line also contains X.
+    out=$("$ONEROM" --unrecognised scan 2>&1)
+    if echo "$out" | grep -q "Serial: $1"; then
       first_miss=""
     else
       if [[ -z "$first_miss" ]]; then
         first_miss=$EPOCHREALTIME
-        why=$("$ONEROM" --unrecognised scan 2>&1 >/dev/null | grep -i "warn" | head -1)
+        why=$(echo "$out" | grep -i -m1 "warn")
         [[ -n "$why" ]] && echo "      (scan miss: ${why#*WARN:  })"
       fi
       (( EPOCHREALTIME - first_miss >= 3.0 )) && return
