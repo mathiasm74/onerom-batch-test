@@ -65,7 +65,9 @@ fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --reads) READS="$2"; shift 2 ;;
+    --reads)
+      [[ $# -ge 2 && "$2" == <1-> ]] || { echo "--reads needs a whole number of 1 or more." >&2; usage; }
+      READS="$2"; shift 2 ;;
     --no-flash) FLASH=0; shift ;;
     --reflash) FLASH=2; shift ;;
     --no-test) TEST=0; shift ;;
@@ -76,6 +78,10 @@ done
 
 [[ -x "$ONEROM" ]] || { echo "onerom CLI not found at $ONEROM" >&2; exit 1; }
 known=$("$ONEROM" board list 2>/dev/null | sed -n '/Supported One ROM board types/,/^$/p' | tr -d ' ' | tr ',' '\n')
+if ! echo "$known" | command grep -q '^fire-'; then
+  echo "Could not read the board list from '$ONEROM board list'; is the CLI working?" >&2
+  exit 1
+fi
 if ! echo "$known" | command grep -qx "$BOARD"; then
   echo "Unknown board '$BOARD'.  The CLI supports:" >&2
   echo "$known" | command grep '^fire-' | tr '\n' ' ' | fold -s -w 76 | sed 's/^/  /' >&2
@@ -176,7 +182,7 @@ make_lab() {
   echo ""
   echo "$(act "PLUG IN THE BOARD TO BECOME THE LAB")"
   printf "    waiting... "
-  local out serial
+  local out serial i
   while true; do
     out=$(scan | grep -v "One ROM Lab")
     echo "$out" | grep -q "Serial:" && break
@@ -352,8 +358,10 @@ EOF
 # seconds per call.  Doing it once here means programming a board starts the
 # moment it is plugged in, and every board gets byte-identical firmware.
 FW=""
+ERRF="$(mktemp -t onerom-batch-err)"
+trap 'rm -f "$ERRF" "$FW"' EXIT
 if [[ $FLASH -ne 0 ]]; then
-  FW="$(mktemp -t onerom-batch-fw).bin"
+  FW="$(mktemp -t onerom-batch-fw.bin)"   # the CLI overwrites it
   echo ""
   echo "Building firmware once ($BOARD, usb + rgb plugins, $SLOT)..."
   if ! "$ONEROM" -y firmware build --board "$BOARD" --plugin usb --plugin rgb \
@@ -363,9 +371,6 @@ if [[ $FLASH -ne 0 ]]; then
   fi
   echo "Firmware: $FW"
 fi
-
-ERRF="$(mktemp -t onerom-batch-err)"
-trap 'rm -f "$ERRF"' EXIT
 
 # ---- Lab back to a normal board ---------------------------------------------
 # The normal batch loop never programs a Lab, so the Lab can't be flashed over
@@ -380,7 +385,7 @@ if [[ $UNLAB -eq 1 ]]; then
     if "$ONEROM" --unrecognised -y --serial "$LAB_SERIAL" program --board "$BOARD" --firmware "$FW" 2> "$ERRF"; then
       ok=1; break
     fi
-    grep -q "No One ROMs found" "$ERRF" || { sed 's/^/    /' "$ERRF"; break; }
+    grep -q -E "No One ROMs found|One ROM not found" "$ERRF" || { sed 's/^/    /' "$ERRF"; break; }
     echo "    (board not seen by the CLI just now, retrying $try/5)"
     sleep 1
   done
@@ -423,10 +428,19 @@ wait_unplug() {
   done
 }
 
-# "Seated" when a read returns anything other than an all-zero bus.
+# "Seated" when a read returns anything other than an all-zero bus.  A Lab
+# error (port gone, Lab hung) is fatal here: otherwise it looks exactly like
+# "not seated" and the poll would wait forever without saying why.
 seated() {
   local r=$(lab_read)
-  [[ "$r" != ERROR* ]] && [[ "${${(z)r}[2]}" == *[1-9A-Fa-f]* ]]
+  if [[ "$r" == ERROR* ]]; then
+    echo ""
+    echo "  ❌ Lab: ${r#ERROR }" >&2
+    echo "     Unplug and replug the Lab, then restart this script." >&2
+    chime Basso
+    exit 1
+  fi
+  [[ "${${(z)r}[2]}" == *[1-9A-Fa-f]* ]]
 }
 
 board_no=0
@@ -459,8 +473,11 @@ while true; do
     fi
     sleep 0.3
   done
-  serial=$(echo "$out" | grep -o 'Serial: [A-F0-9]*' | head -1 | awk '{print $2}')
-  blank=0; echo "$out" | grep -q "Firmware: n/a" && blank=1
+  # Only the first board's line counts; with two plugged in, the second one's
+  # state must not decide whether the first is blank.
+  line=$(echo "$out" | grep "Serial:" | head -1)
+  serial=$(echo "$line" | grep -o 'Serial: [A-F0-9]*' | awk '{print $2}')
+  blank=0; echo "$line" | grep -q "Firmware: n/a" && blank=1
   board_no=$((board_no + 1))
   banner $board_no
 
@@ -484,11 +501,13 @@ while true; do
       if "$ONEROM" --unrecognised -y --serial "$serial" program --board "$BOARD" --firmware "$FW" 2> "$ERRF"; then
         prog_ok=1; break
       fi
-      if grep -q "No One ROMs found" "$ERRF"; then
+      # "No One ROMs found" when nothing is on the bus; "One ROM not found"
+      # when the Lab is there but the board has dropped out.
+      if grep -q -E "No One ROMs found|One ROM not found" "$ERRF"; then
         echo "    (board not seen by the CLI just now, retrying $try/5)"
         sleep 1
       else
-        cat "$ERRF" | sed 's/^/      /'
+        sed 's/^/      /' "$ERRF"
         break
       fi
     done
@@ -549,7 +568,7 @@ while true; do
     echo "seated, hold still."
     sleep 0.5
 
-    result="PASS"; shas=""; fails=""
+    result="PASS"; shas=""; fails=""; wrong_shas=""
     for ((n = 1; n <= READS; n++)); do
       printf "      read %d/%d: " "$n" "$READS"
       r=$(lab_read)
@@ -572,9 +591,15 @@ while true; do
         result="FAIL"
       else
         echo "FAIL  SHA1 $sha != expected  (wrong bytes - contact, or a stuck line)"
-        result="FAIL"
+        result="FAIL"; wrong_shas="$wrong_shas$sha "
       fi
     done
+    # Every read wrong in the same way on a board this run did not flash is
+    # almost certainly a different image, not a bad board.
+    if [[ $blank -eq 0 && $FLASH -ne 2 && $(echo $wrong_shas | wc -w) -eq $READS \
+          && $(echo $wrong_shas | tr ' ' '\n' | sort -u | wc -l) -eq 1 ]]; then
+      echo "      (the same wrong SHA1 every read: the board probably carries another image; try --reflash)"
+    fi
 
     echo ""
     if [[ "$result" == "PASS" ]]; then
