@@ -413,17 +413,27 @@ mkdir -p "$(dirname "$LOG")"
 [[ -f "$LOG" ]] || echo "timestamp,serial,board,result,reads,sha1s,failures" >> "$LOG"
 
 # Wait until the board has been absent for three seconds.  A scan takes about
-# 50 ms, but a connected board randomly drops out of scans for up to about 1.6
+# 50 ms, but a connected board sometimes drops out of scans for up to about 1.6
 # seconds at a time, so a short absence must not count as an unplug (the board
 # would be seen again as a new board and programmed twice).
+#
+# Measured 2026-10-12: a board the CLI cannot open because another process
+# holds its USB interface is left out of the scan and reported on stderr as
+# "could not be opened".  The first miss of each absence shows that reason,
+# so a pattern of misses can be told apart from a real unplug.  See
+# upstream/01-scan-misses-running-board.md.
 zmodload zsh/datetime
 wait_unplug() {
-  local first_miss=""
+  local first_miss="" why
   while true; do
     if scan | grep -q "$1"; then
       first_miss=""
     else
-      [[ -z "$first_miss" ]] && first_miss=$EPOCHREALTIME
+      if [[ -z "$first_miss" ]]; then
+        first_miss=$EPOCHREALTIME
+        why=$("$ONEROM" --unrecognised scan 2>&1 >/dev/null | grep -i "warn" | head -1)
+        [[ -n "$why" ]] && echo "      (scan miss: ${why#*WARN:  })"
+      fi
       (( EPOCHREALTIME - first_miss >= 3.0 )) && return
     fi
     sleep 0.1
@@ -506,7 +516,7 @@ while true; do
       # "No One ROMs found" when nothing is on the bus; "One ROM not found"
       # when the Lab is there but the board has dropped out.
       if grep -q -E "No One ROMs found|One ROM not found" "$ERRF"; then
-        echo "    (board not seen by the CLI just now, retrying $try/5)"
+        echo "    (board not seen by the CLI just now, retrying $try/5: $(grep -i -m1 'warn' "$ERRF" | sed 's/.*WARN:  //'))"
         sleep 1
       else
         sed 's/^/      /' "$ERRF"
