@@ -38,16 +38,19 @@
 set -u
 set -o pipefail   # so a failed "onerom program" is seen through the sed indent
 
-ONEROM="${ONEROM:-$HOME/.local/bin/onerom}"
-[[ -x "$ONEROM" ]] || ONEROM="$HOME/Downloads/onerom"
-LOG="$HOME/code/onerom-batch-test.log"
+# Everything on disk is relative to this script or overridable from the
+# environment, so a checkout works anywhere.
+SCRIPT_DIR="${0:A:h}"
+ONEROM="${ONEROM:-$(command -v onerom || echo "$HOME/.local/bin/onerom")}"
+IMAGES="${IMAGES:-$SCRIPT_DIR/images}"                  # test ROM images
+LOG="${LOG:-$SCRIPT_DIR/onerom-batch-test.log}"         # CSV results
 READS=3
 ATTEMPTS=3
 FLASH=1       # 1 = flash blank boards, 0 = never flash, 2 = flash every board
 TEST=1        # 1 = bus-test on the Lab, 0 = program only
 UNLAB=0       # 1 = reprogram the connected Lab as a normal board and exit
 LAB_VERSION="${LAB_VERSION:-0.4.0}"             # One ROM Lab release to flash when making a Lab
-LAB_DIR="$HOME/code/one-rom-backups/lab"        # cached Lab images
+LAB_DIR="${LAB_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/onerom-batch-test}"  # downloaded Lab images
 
 usage() { echo "Usage: $0 <board> [--reads N] [--no-flash|--reflash] [--no-test] [--lab-to-normal]" >&2; exit 1; }
 [[ $# -ge 1 ]] || usage
@@ -76,7 +79,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -x "$ONEROM" ]] || { echo "onerom CLI not found at $ONEROM" >&2; exit 1; }
+[[ -x "$ONEROM" ]] || { echo "onerom CLI not found (looked at $ONEROM). Put it on PATH or set ONEROM=/path/to/onerom." >&2; exit 1; }
 known=$("$ONEROM" board list 2>/dev/null | sed -n '/Supported One ROM board types/,/^$/p' | tr -d ' ' | tr ',' '\n')
 if ! echo "$known" | command grep -q '^fire-'; then
   echo "Could not read the board list from '$ONEROM board list'; is the CLI working?" >&2
@@ -94,7 +97,6 @@ PINS="${${BOARD#fire-}%%-*}"
 # count: the largest common EPROM/mask ROM of that package, so every address
 # line is exercised.  Chips with a configurable CS get it answered active-low at
 # Lab's prompt; EPROMs with fixed /CE /OE prompt for nothing.
-IMAGES="$HOME/code/one-rom/images/test"
 case "$PINS" in
   24) CHIP="2364";   SERVED_BYTES=$((8*1024));   IMAGE="$IMAGES/rand_64KB.rom"
       SLOT="file=$IMAGE,type=2364,cs1=active-low,size-handling=truncate" ;;

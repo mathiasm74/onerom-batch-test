@@ -75,24 +75,31 @@ onerom-batch-test.sh <board> [--reads N] [--no-flash|--reflash] [--no-test] [--l
 
 ## Requirements
 
-- `onerom` CLI (looked for in `~/.local/bin/onerom`, then `~/Downloads/onerom`;
-  override with `ONEROM=/path/to/onerom`)
+- `onerom` CLI on `PATH` (or set `ONEROM=/path/to/onerom`)
 - `python3` with `pyserial`
 - A One ROM Lab whose pin count matches the boards under test
 - `picotool`, only if you want the script to make a Lab for you
 - zsh (macOS)
 
-## Paths baked into the script
+## Files and overrides
 
-These are set near the top of the script and assume the layout on the machine
-it was written on. Edit them for yours.
+Nothing is tied to a particular machine. The test images ship in `images/`,
+the log is written next to the script, and the `onerom` CLI is taken from
+`PATH`. Each can be overridden with an environment variable.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `IMAGES` | `~/code/one-rom/images/test` | Test ROM images from a one-rom checkout |
-| `LOG` | `~/code/onerom-batch-test.log` | CSV results log |
-| `LAB_DIR` | `~/code/one-rom-backups/lab` | Cached Lab firmware images |
-| `LAB_VERSION` | `0.4.0` | Lab release to flash when making a Lab |
+| `ONEROM` | `onerom` on `PATH`, else `~/.local/bin/onerom` | The One ROM CLI |
+| `IMAGES` | `<repo>/images` | Test ROM images (`rand_64KB.rom`, `rand_512KB.rom`) |
+| `LOG` | `<repo>/onerom-batch-test.log` | CSV results log, gitignored |
+| `LAB_DIR` | `$XDG_CACHE_HOME/onerom-batch-test` or `~/.cache/onerom-batch-test` | Downloaded Lab firmware images |
+| `LAB_VERSION` | `0.4.0` | Lab release to download when making a Lab |
+
+Example:
+
+```
+LOG=~/batches/2026-10.csv ./onerom-batch-test.sh 24-e
+```
 
 ## Handling tips
 
