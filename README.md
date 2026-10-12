@@ -28,6 +28,36 @@ For each board:
 With no Lab connected it offers to turn the next board plugged in into one
 (needs `picotool`), or to program boards without testing.
 
+## Bench setup: the Lab and the board under test
+
+The Lab is a spare One ROM Fire board running the
+[One ROM Lab](https://github.com/piersfinlayson/one-rom/tree/main/rust/lab)
+firmware, with pogo pins in its ROM socket. The board under test is pressed
+onto those pins so the Lab can read it like a ROM chip.
+
+**Both boards need their own USB cable to the computer.** The pogo pins carry
+only the ROM socket signals, not USB.
+
+- **The Lab** is driven over its USB serial (CDC) port. The script sends it
+  read commands and parses the SHA1, checksum and tristate results it prints.
+  It also has to be seen by `onerom scan`, which is how the script finds its
+  serial number and picks the right port.
+- **The board under test** is powered from its own USB cable, and that same
+  cable is how the `onerom` CLI flashes it and how the script detects it being
+  plugged in and unplugged. The `usb` system plugin in the test image is what
+  keeps the board serving the ROM while it is USB powered. Without that plugin
+  One ROM drops into its bootloader whenever it sees VBUS, and there would be
+  nothing on the socket pins for the Lab to read.
+
+Because both boards show up in `onerom scan` and both expose a serial port,
+the script tells them apart by USB serial number rather than by port name.
+Only one Lab should be connected at a time. Boards with the same pin count as
+the Lab are the only ones it can test.
+
+Keep the Lab plugged in for the whole session. Plug each board under test in,
+let the script flash it, press it onto the pogo pins when asked, and unplug it
+when the result is shown.
+
 ## Usage
 
 ```
