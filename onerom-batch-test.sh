@@ -568,7 +568,7 @@ while true; do
     echo "seated, hold still."
     sleep 0.5
 
-    result="PASS"; shas=""; fails=""; wrong_shas=""
+    result="PASS"; shas=""; fails=""; wrong_shas=()
     for ((n = 1; n <= READS; n++)); do
       printf "      read %d/%d: " "$n" "$READS"
       r=$(lab_read)
@@ -591,13 +591,12 @@ while true; do
         result="FAIL"
       else
         echo "FAIL  SHA1 $sha != expected  (wrong bytes - contact, or a stuck line)"
-        result="FAIL"; wrong_shas="$wrong_shas$sha "
+        result="FAIL"; wrong_shas+=("$sha")
       fi
     done
     # Every read wrong in the same way on a board this run did not flash is
     # almost certainly a different image, not a bad board.
-    if [[ $blank -eq 0 && $FLASH -ne 2 && $(echo $wrong_shas | wc -w) -eq $READS \
-          && $(echo $wrong_shas | tr ' ' '\n' | sort -u | wc -l) -eq 1 ]]; then
+    if [[ $blank -eq 0 && $FLASH -ne 2 && ${#wrong_shas} -eq $READS && ${#${(u)wrong_shas}} -eq 1 ]]; then
       echo "      (the same wrong SHA1 every read: the board probably carries another image; try --reflash)"
     fi
 
