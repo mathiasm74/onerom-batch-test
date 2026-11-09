@@ -44,6 +44,7 @@ SCRIPT_DIR="${0:A:h}"
 ONEROM="${ONEROM:-$(command -v onerom || echo "$HOME/.local/bin/onerom")}"
 IMAGES="${IMAGES:-$SCRIPT_DIR/images}"                  # test ROM images
 LOG="${LOG:-$SCRIPT_DIR/onerom-batch-test.log}"         # CSV results
+DETAIL_LOG="${DETAIL_LOG:-${LOG:r}-details.log}"        # CLI errors and failed reads
 READS=3
 ATTEMPTS=3
 FLASH=1       # 1 = flash blank boards, 0 = never flash, 2 = flash every board
@@ -97,15 +98,29 @@ PINS="${${BOARD#fire-}%%-*}"
 # count: the largest common EPROM/mask ROM of that package, so every address
 # line is exercised.  Chips with a configurable CS get it answered active-low at
 # Lab's prompt; EPROMs with fixed /CE /OE prompt for nothing.
+#
+# ADDR_PINS / DATA_PINS are the package pins of A0.. and D0..D7, copied from
+# one-rom's rust/config/json/chip-types.json, so a stuck line can be named by
+# its pin.  The 27C400 is read byte-wide here: byte-address bit 0 is A-1 (pin
+# 29, shared with D15), bit n is A(n-1).  ADDR_BASE is the name of bit 0.
+ADDR_BASE=0
 case "$PINS" in
   24) CHIP="2364";   SERVED_BYTES=$((8*1024));   IMAGE="$IMAGES/rand_64KB.rom"
-      SLOT="file=$IMAGE,type=2364,cs1=active-low,size-handling=truncate" ;;
+      SLOT="file=$IMAGE,type=2364,cs1=active-low,size-handling=truncate"
+      ADDR_PINS=(8 7 6 5 4 3 2 1 23 22 19 18 21)
+      DATA_PINS=(9 10 11 13 14 15 16 17) ;;
   28) CHIP="27512";  SERVED_BYTES=$((64*1024));  IMAGE="$IMAGES/rand_64KB.rom"
-      SLOT="file=$IMAGE,type=27512" ;;
+      SLOT="file=$IMAGE,type=27512"
+      ADDR_PINS=(10 9 8 7 6 5 4 3 25 24 21 23 2 26 27 1)
+      DATA_PINS=(11 12 13 15 16 17 18 19) ;;
   32) CHIP="27C040"; SERVED_BYTES=$((512*1024)); IMAGE="$IMAGES/rand_512KB.rom"
-      SLOT="file=$IMAGE,type=27C040" ;;
+      SLOT="file=$IMAGE,type=27C040"
+      ADDR_PINS=(12 11 10 9 8 7 6 5 27 26 23 25 4 28 29 3 2 30 31)
+      DATA_PINS=(13 14 15 17 18 19 20 21) ;;
   40) CHIP="27C400"; SERVED_BYTES=$((512*1024)); IMAGE="$IMAGES/rand_512KB.rom"
-      SLOT="file=$IMAGE,type=27C400" ;;
+      SLOT="file=$IMAGE,type=27C400"
+      ADDR_PINS=(29 9 8 7 6 5 4 3 2 40 39 38 37 36 35 34 33 32 1); ADDR_BASE=-1
+      DATA_PINS=(13 15 17 19 22 24 26 28) ;;
   *)  echo "No test chip defined for a $PINS-pin board." >&2; exit 1 ;;
 esac
 
@@ -114,6 +129,45 @@ python3 -c "import serial" 2>/dev/null || { echo "pyserial missing: python3 -m p
 
 # Expected SHA1 of exactly the bytes the board serves.
 EXPECT_SHA1=$(head -c "$SERVED_BYTES" "$IMAGE" | shasum -a 1 | awk '{print $1}')
+
+# What the Lab would read with one line stuck high or low: every address line
+# the served size uses, and every data bit (byte-wide reads; the 16-bit read
+# of a 27C400 is not covered).  A failed read whose SHA1 is in this table
+# names the suspect line and its socket pin directly.  Labels are
+# "<line>:<pin>:<low|high>", e.g. "A10:21:low".  A line stuck low can also be an open
+# joint on a line that floats low, so "stuck low" means "reads as 0".
+typeset -A FAULT_BY_SHA FAULT_CSUM
+while read -r sha csum label; do
+  FAULT_BY_SHA[$sha]="$label"; FAULT_CSUM[$label]="$csum"
+done < <(python3 -I - "$IMAGE" "$SERVED_BYTES" "$ADDR_BASE" "${(j:,:)ADDR_PINS}" "${(j:,:)DATA_PINS}" <<'PYEOF'
+import sys, hashlib
+d = open(sys.argv[1], "rb").read()[: int(sys.argv[2])]
+base = int(sys.argv[3])
+apins = sys.argv[4].split(","); dpins = sys.argv[5].split(",")
+n = len(d)
+def emit(label, b):
+    print(hashlib.sha1(b).hexdigest(), "0x%08X" % sum(b), label)
+for a in range(n.bit_length() - 1):
+    half = 1 << a
+    blocks = [d[i : i + half] for i in range(0, n, half)]
+    name = f"A{a + base}:{apins[a]}"
+    emit(f"{name}:low",  b"".join(blocks[i & ~1] for i in range(len(blocks))))
+    emit(f"{name}:high", b"".join(blocks[i | 1]  for i in range(len(blocks))))
+for k in range(8):
+    m = 1 << k
+    emit(f"D{k}:{dpins[k]}:low",  d.translate(bytes(x & ~m for x in range(256))))
+    emit(f"D{k}:{dpins[k]}:high", d.translate(bytes(x | m  for x in range(256))))
+PYEOF
+)
+(( ${#FAULT_BY_SHA} )) || echo "Warning: could not build the stuck-line table; failed reads will not name a suspect line." >&2
+
+# SHA1 -> "A10 (27512 pin 21) stuck low", or nothing if it is not a known fault.
+suspect() {
+  local l="${FAULT_BY_SHA[$1]:-}"
+  [[ -n "$l" ]] || return 0
+  local -a f=("${(@s/:/)l}")
+  print -r -- "${f[1]} ($CHIP pin ${f[2]}) stuck ${f[3]}"
+}
 
 scan() { "$ONEROM" --unrecognised scan 2>/dev/null; }
 
@@ -288,6 +342,7 @@ else
   echo "Lab:      none - PROGRAM ONLY, boards are not bus-tested"
 fi
 echo "Log:      $LOG"
+echo "Details:  $DETAIL_LOG"
 case $FLASH in
   0) echo "Flash:    never" ;;
   1) echo "Flash:    blank boards only (usb, rgb plugins)" ;;
@@ -412,6 +467,19 @@ passed=0; failed=0
 mkdir -p "$(dirname "$LOG")"
 [[ -f "$LOG" ]] || echo "timestamp,serial,board,result,reads,sha1s,failures" >> "$LOG"
 
+# The CSV keeps one line per board.  What would explain a failure - the CLI's
+# error text, every failed read of every attempt - goes to the details log,
+# one line per entry, prefixed with the time, serial and board.  Takes the
+# message as arguments, or from stdin when there are none.
+detail() {
+  local prefix="$(date +%FT%T) $serial $BOARD"
+  if (( $# )); then
+    print -r -- "$prefix $*" >> "$DETAIL_LOG"
+  else
+    sed "s/^/$prefix   /" >> "$DETAIL_LOG"
+  fi
+}
+
 # Wait until the board has been absent for three seconds.  A scan takes about
 # 50 ms, but a connected board sometimes drops out of scans for up to about 1.6
 # seconds at a time, so a short absence must not count as an unplug (the board
@@ -517,6 +585,8 @@ while true; do
       if "$ONEROM" --unrecognised -y --serial "$serial" program --board "$BOARD" --firmware "$FW" 2> "$ERRF"; then
         prog_ok=1; break
       fi
+      detail "program try $try/5 failed, CLI stderr:"
+      if [[ -s "$ERRF" ]]; then detail < "$ERRF"; else detail "(no stderr output)"; fi
       # "No One ROMs found" when nothing is on the bus; "One ROM not found"
       # when the Lab is there but the board has dropped out.
       if grep -q -E "No One ROMs found|One ROM not found" "$ERRF"; then
@@ -590,6 +660,8 @@ while true; do
       r=$(lab_read)
       if [[ "$r" == ERROR* ]]; then
         echo "$r"
+        detail "attempt $attempt read $n/$READS: Lab error:"
+        print -r -- "$r" | detail
         result="ERROR"; break
       fi
       sha=${${(z)r}[1]}; csum=${${(z)r}[2]}; f=${${(z)r}[3]}
@@ -601,18 +673,27 @@ while true; do
         echo "ok    SHA1 matches, tristate failures 0"
       elif [[ $sha_ok -eq 1 ]]; then
         echo "FAIL  SHA1 matches, tristate failures $f  (a line not released - fingers on the pins?)"
+        detail "attempt $attempt read $n/$READS: FAIL tristate  sha1=$sha checksum=$csum tristate_failures=$f"
         result="FAIL"
       elif [[ "$csum" != *[1-9A-Fa-f]* ]]; then
         echo "FAIL  read all zeros  (lost contact during the read)"
+        detail "attempt $attempt read $n/$READS: FAIL zeros  sha1=$sha checksum=$csum tristate_failures=$f"
         result="FAIL"
       else
-        echo "FAIL  SHA1 $sha != expected  (wrong bytes - contact, or a stuck line)"
+        sus=""; for x in ${(s:+:)sha}; do [[ -n "$(suspect $x)" ]] && sus="$(suspect $x)"; done
+        if [[ -n "$sus" ]]; then
+          echo "FAIL  SHA1 $sha != expected  (matches $sus - check that pin's joint)"
+        else
+          echo "FAIL  SHA1 $sha != expected  (wrong bytes - contact, or a stuck line)"
+        fi
+        detail "attempt $attempt read $n/$READS: FAIL sha1  sha1=$sha checksum=$csum tristate_failures=$f expected=$EXPECT_SHA1${sus:+ suspect=\"$sus\"}"
         result="FAIL"; wrong_shas+=("$sha")
       fi
     done
     # Every read wrong in the same way on a board this run did not flash is
     # almost certainly a different image, not a bad board.
-    if [[ $blank -eq 0 && $FLASH -ne 2 && ${#wrong_shas} -eq $READS && ${#${(u)wrong_shas}} -eq 1 ]]; then
+    if [[ $blank -eq 0 && $FLASH -ne 2 && ${#wrong_shas} -eq $READS && ${#${(u)wrong_shas}} -eq 1 \
+          && -z "$(suspect ${wrong_shas[1]})" ]]; then
       echo "      (the same wrong SHA1 every read: the board probably carries another image; try --reflash)"
     fi
 

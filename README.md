@@ -19,7 +19,11 @@ For each board:
 3. Polls the Lab until the board is seated on the pogo pins.
 4. Runs checksum reads on the Lab and compares SHA1 and tristate failures
    against the expected values. PASS only if every read matches with zero
-   failures.
+   failures. A wrong SHA1 is looked up in a table of the SHA1s a single
+   address or data line stuck high or low would produce, computed from the
+   test image at startup, so a bad joint is named directly with its socket
+   pin (e.g. "matches A10 (27512 pin 21) stuck low"). The pin maps come from
+   one-rom's `rust/config/json/chip-types.json`.
 5. On a failure, waits for you to lift and re-seat the board and reruns the
    test, up to `ATTEMPTS` times, before recording the board as failed.
 6. Appends a CSV line (timestamp, serial, board, result, reads, SHA1s,
@@ -92,6 +96,7 @@ the log is written next to the script, and the `onerom` CLI is taken from
 | `ONEROM` | `onerom` on `PATH`, else `~/.local/bin/onerom` | The One ROM CLI |
 | `IMAGES` | `<repo>/images` | Test ROM images (`rand_64KB.rom`, `rand_512KB.rom`) |
 | `LOG` | `<repo>/onerom-batch-test.log` | CSV results log, gitignored |
+| `DETAIL_LOG` | `LOG` without its extension, plus `-details.log` | The CLI's error text for each failed programming try, and every failed or errored Lab read from every attempt |
 | `LAB_DIR` | `$XDG_CACHE_HOME/onerom-batch-test` or `~/.cache/onerom-batch-test` | Downloaded Lab firmware images |
 | `LAB_VERSION` | `0.4.0` | Lab release to download when making a Lab |
 
